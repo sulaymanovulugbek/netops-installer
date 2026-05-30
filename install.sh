@@ -86,7 +86,8 @@ GITHUB_TOKEN="$GH_TOKEN" \
   bash "$TMP_INSTALLER" \
     --repo-url="$NETOPS_REPO_URL_AUTHED" \
     --branch="$BRANCH" \
-    --target="$TARGET"
+    --target="$TARGET" \
+    --non-interactive
 
 # --- strip token from git remote so .git/config has no credentials ------------
 if [[ -d "${TARGET}/.git" ]]; then
