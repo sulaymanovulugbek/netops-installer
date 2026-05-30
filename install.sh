@@ -10,6 +10,11 @@
 #     | sudo bash
 set -euo pipefail
 
+# Defend against stale PWD (operator may have just deleted /opt/netops-platform
+# via uninstall — current shell still sits inside the deleted dir, breaking
+# git clone with "fatal: Unable to read current working directory").
+cd /root 2>/dev/null || cd / 
+
 REPO_OWNER="sulaymanovulugbek"
 REPO_NAME="netops-platform"
 BRANCH="${NETOPS_BRANCH:-release/v1.0}"
