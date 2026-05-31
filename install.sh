@@ -46,10 +46,16 @@ echo ""
 [[ -n "$GH_USER" ]]  || die "username cannot be empty"
 [[ -n "$GH_TOKEN" ]] || die "token cannot be empty"
 
-# Always shred the token from memory at exit (never written to disk)
+# Always shred the token from memory + scrub tmpdir at exit (never on disk)
+TMP_BOOT_DIR=""
 cleanup() {
   GH_TOKEN=""
-  [[ -n "${TMP_INSTALLER:-}" ]] && shred -u "$TMP_INSTALLER" 2>/dev/null || true
+  if [[ -n "${TMP_BOOT_DIR:-}" && -d "$TMP_BOOT_DIR" ]]; then
+    # Strip any oauth2: URL from .git/config before rm just in case
+    [[ -d "${TMP_BOOT_DIR}/.git" ]] && \
+      git -C "$TMP_BOOT_DIR" remote set-url origin "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" 2>/dev/null || true
+    rm -rf "$TMP_BOOT_DIR"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -64,17 +70,27 @@ if [[ "$http_code" != "200" ]]; then
 fi
 ok "credentials accepted by GitHub for user: $GH_USER"
 
-# --- download real installer (in-memory token only) ---------------------------
-echo "[2/4] downloading install-oel.sh from private repo..."
-TMP_INSTALLER=$(mktemp /tmp/install-oel-real.XXXX.sh)
-if ! curl -fsSL -H "Authorization: token ${GH_TOKEN}" \
-        -H "Accept: application/vnd.github.raw" \
-        -o "$TMP_INSTALLER" \
-        "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/install/install-oel.sh?ref=${BRANCH}"; then
-  die "cannot fetch install-oel.sh — token may have expired"
+# --- clone full repo to tmpdir so install-oel.sh has lib/*.sh siblings --------
+# Why a full clone instead of single-file download:
+#   install-oel.sh sources install/lib/{common,state,preflight,pg_wait,
+#   migrations,healthcheck}.sh — those MUST sit next to it at runtime.
+# Why a tmpdir clone instead of cloning straight to $TARGET:
+#   install-oel.sh::do_repo() also clones to $TARGET; we don't want to
+#   pollute the real install dir with the bootstrap's working copy.
+echo "[2/4] cloning installer + lib/ to temp dir..."
+command -v git >/dev/null 2>&1 || dnf -y install -q git 2>/dev/null || yum -y install -q git
+TMP_BOOT_DIR=$(mktemp -d /tmp/netops-boot.XXXXXX)
+CLONE_URL="https://oauth2:${GH_TOKEN}@github.com/${REPO_OWNER}/${REPO_NAME}.git"
+if ! git clone --quiet --branch "$BRANCH" --depth=1 "$CLONE_URL" "$TMP_BOOT_DIR" 2>/dev/null; then
+  die "git clone failed — token may not have Contents:Read access to ${REPO_OWNER}/${REPO_NAME}"
 fi
+# Immediately rewrite remote without token (defense in depth)
+git -C "$TMP_BOOT_DIR" remote set-url origin "https://github.com/${REPO_OWNER}/${REPO_NAME}.git"
+TMP_INSTALLER="${TMP_BOOT_DIR}/install/install-oel.sh"
+[[ -f "$TMP_INSTALLER" ]]                  || die "install/install-oel.sh missing in clone"
+[[ -f "${TMP_BOOT_DIR}/install/lib/common.sh" ]] || die "install/lib/common.sh missing in clone"
 chmod +x "$TMP_INSTALLER"
-ok "installer downloaded ($(wc -c < "$TMP_INSTALLER") bytes)"
+ok "bootstrap clone at $TMP_BOOT_DIR ($(du -sh "$TMP_BOOT_DIR" 2>/dev/null | awk '{print $1}'))"
 
 # --- run real installer, pass token ONLY via env for this process tree --------
 echo "[3/4] running install-oel.sh..."
